@@ -16,20 +16,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build scan image
+      - name: Extract base image from Dockerfile
+        id: base-image
         run: |
-          docker build -f Dockerfile.scan -t scan-image:latest .
+          BASE_IMAGE=$(grep -E '^FROM' Dockerfile | head -1 | awk '{print $2}')
+          echo "image=$BASE_IMAGE" >> $GITHUB_OUTPUT
+          echo "Base image: $BASE_IMAGE"
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'scan-image:latest'
+          image-ref: ${{ steps.base-image.outputs.image }}
           format: 'json'
           output: 'trivy-results.json'
           severity: 'CRITICAL,HIGH,MEDIUM'
 
       - name: Parse results and send to Slack
         run: |
+          BASE_IMAGE="${{ steps.base-image.outputs.image }}"
+          
           # 취약점 카운트
           CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json)
           HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-results.json)
@@ -84,7 +89,7 @@ jobs:
             VULN_BLOCKS=$(echo "$VULN_BLOCKS" | sed 's/]$/'"$FOOTER_BLOCK"']/')
           fi
           
-          # 최종 JSON 생성
+          # 최종 JSON 생성 (이미지 이름 포함)
           cat << EOF > slack-payload.json
           {
             "attachments": [
@@ -120,6 +125,15 @@ jobs:
                     }
                   },
                   {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "📦 *Image:* \`${BASE_IMAGE}\`"
+                      }
+                    ]
+                  },
+                  {
                     "type": "divider"
                   },
                   {
@@ -138,7 +152,7 @@ jobs:
           # 취약점 블록들을 attachments[0].blocks 배열에 추가
           jq --argjson vuln_blocks "$VULN_BLOCKS" '.attachments[0].blocks += $vuln_blocks' slack-payload.json > temp.json && mv temp.json slack-payload.json
           
-          # 링크 블록 추가 (항상 최하단에 표시)
+          # 링크 블록 추가
           jq --arg url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             '.attachments[0].blocks += [
               {"type": "divider"},
