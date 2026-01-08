@@ -26,7 +26,7 @@ jobs:
           echo "=== FROM 라인 추출 ==="
           
           # FROM 라인 추출 (더 견고한 방식)
-          FROM_LINE=$(head -1 Dockerfile | tr -d '\r')
+          FROM_LINE=$(head -1 Dockerfile.scan | tr -d '\r')
           echo "FROM line: '$FROM_LINE'"
           
           # FROM 키워드 제거하고 이미지만 추출
