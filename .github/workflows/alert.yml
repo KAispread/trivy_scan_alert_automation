@@ -2,7 +2,7 @@ name: Weekly Security Scan
 
 on:
   schedule:
-    - cron: '0 0 * * 1'
+    - cron: '0 1 * * 1'
   workflow_dispatch:
 
 env:
@@ -54,18 +54,31 @@ jobs:
             COLOR="#28a745"
           fi
           
-          # Critical/High 취약점 상세 목록 (최대 10개)
+          # Critical/High 취약점 상세 목록 (CVE 기준 중복 제거, 최대 10개)
           VULN_DETAILS=$(jq -r '
-            [.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] 
-            | .[0:10] 
-            | .[] 
-            | "• \(.Severity): \(.VulnerabilityID) - \(.PkgName) (\(.InstalledVersion) → \(.FixedVersion // "no fix"))"
+            [.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")]
+            | group_by(.VulnerabilityID)
+            | map({
+                cve: .[0].VulnerabilityID,
+                severity: .[0].Severity,
+                pkg: ([.[].PkgName] | unique | join(", ")),
+                installed: .[0].InstalledVersion,
+                fixed: (.[0].FixedVersion // "no fix")
+              })
+            | .[0:10]
+            | .[]
+            | "\(.severity)\t\(.cve)\t\(.pkg)\t\(.installed) → \(.fixed)"
           ' trivy-results.json)
           
           # 상세 목록이 비어있으면 메시지 설정
           if [ -z "$VULN_DETAILS" ]; then
-            VULN_DETAILS="Critical/High 취약점 없음"
+            VULN_TABLE="취약점 없음 ✅"
+          else
+            VULN_TABLE="Severity | CVE | Package | Version\n-------|-----|---------|--------\n$(echo "$VULN_DETAILS" | sed 's/\t/ | /g')"
           fi
+          
+          # 줄바꿈 이스케이프 처리
+          VULN_TABLE_ESCAPED=$(echo "$VULN_TABLE" | sed ':a;N;$!ba;s/\n/\\n/g')
           
           # Slack 메시지 생성
           cat << EOF > slack-payload.json
@@ -123,7 +136,14 @@ jobs:
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": "*Critical/High 취약점 상세:*\n\`\`\`${VULN_DETAILS}\`\`\`"
+                      "text": "*🔍 Critical/High 취약점 상세 (CVE 기준):*"
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "\`\`\`${VULN_TABLE_ESCAPED}\`\`\`"
                     }
                   },
                   {
