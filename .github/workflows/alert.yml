@@ -2,7 +2,7 @@ name: Weekly Security Scan
 
 on:
   schedule:
-    - cron: '0 1 * * 1'
+    - cron: '0 0 * * 1'
   workflow_dispatch:
 
 env:
@@ -63,7 +63,7 @@ jobs:
             | sort_by(if .Severity == "CRITICAL" then 0 else 1 end)
             | .[0:10]
             | .[]
-            | "▪️ *Sev:* \(.Severity)\n   *CVE:* \(.VulnerabilityID)\n   *Library:* \(.PkgName)\n   *Status:* \(.Status // "unknown")\n   *Installed:* \(.InstalledVersion)\n   *Fixed:* \(.FixedVersion // "no fix")"
+            | "*[\(.Severity)]* \(.VulnerabilityID)\n• Library: \(.PkgName)\n• Status: \(.Status // "unknown")\n• Installed: \(.InstalledVersion)\n• Fixed: \(.FixedVersion // "no fix")"
           ' trivy-results.json)
           
           # 상세 목록이 비어있으면 메시지 설정
@@ -105,22 +105,6 @@ jobs:
                       {
                         "type": "mrkdwn",
                         "text": "*📊 총 취약점:*\n${TOTAL}개"
-                      },
-                      {
-                        "type": "mrkdwn",
-                        "text": "*🚨 Critical:* ${CRITICAL}개"
-                      },
-                      {
-                        "type": "mrkdwn",
-                        "text": "*⚠️ High:* ${HIGH}개"
-                      },
-                      {
-                        "type": "mrkdwn",
-                        "text": "*📢 Medium:* ${MEDIUM}개"
-                      },
-                      {
-                        "type": "mrkdwn",
-                        "text": "*📦 Image:*\neclipse-temurin:21-alpine"
                       }
                     ]
                   },
@@ -128,7 +112,7 @@ jobs:
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": "🔗 *<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|GitHub Actions 전체 리포트 보기>*"
+                      "text": "*🚨 Critical:* ${CRITICAL}개\n*⚠️ High:* ${HIGH}개\n*📢 Medium:* ${MEDIUM}개"
                     }
                   },
                   {
@@ -142,11 +126,33 @@ jobs:
                     }
                   },
                   {
-                    "type": "section",
-                    "text": {
-                      "type": "mrkdwn",
-                      "text": "${VULN_LIST_ESCAPED}"
-                    }
+                    "type": "rich_text",
+                    "elements": [
+                      {
+                        "type": "rich_text_preformatted",
+                        "elements": [
+                          {
+                            "type": "text",
+                            "text": "$(jq -r '
+                              [.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")]
+                              | sort_by(if .Severity == "CRITICAL" then 0 else 1 end)
+                              | .[0:10]
+                              | .[]
+                              | "[\(.Severity)] \(.VulnerabilityID)\n  Library:   \(.PkgName)\n  Status:    \(.Status // "unknown")\n  Installed: \(.InstalledVersion)\n  Fixed:     \(.FixedVersion // "no fix")\n"
+                            ' trivy-results.json)"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "🔗 <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|trivy scan 리포트 보기>"
+                      }
+                    ]
                   }
                 ]
               }
