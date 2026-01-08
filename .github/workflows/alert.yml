@@ -39,7 +39,7 @@ jobs:
           # 날짜
           SCAN_DATE=$(date +'%Y-%m-%d %H:%M UTC')
           
-          # 상태 이모지
+          # 상태 이모지 및 색상
           if [ "$CRITICAL" -gt 0 ]; then
             STATUS="🚨"
             COLOR="#dc3545"
@@ -54,31 +54,45 @@ jobs:
             COLOR="#28a745"
           fi
           
-          # Critical/High 취약점 상세 목록 (CVE 기준 중복 제거, 최대 10개)
-          VULN_DETAILS=$(jq -r '
+          # Critical/High 취약점 목록 (CVE 기준 중복 제거, 최대 10개, 보기 좋은 형식)
+          VULN_LIST=$(jq -r '
             [.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")]
             | group_by(.VulnerabilityID)
             | map({
                 cve: .[0].VulnerabilityID,
                 severity: .[0].Severity,
-                pkg: ([.[].PkgName] | unique | join(", ")),
+                pkg: .[0].PkgName,
                 installed: .[0].InstalledVersion,
                 fixed: (.[0].FixedVersion // "no fix")
               })
+            | sort_by(.severity)
             | .[0:10]
+            | to_entries
             | .[]
-            | "\(.severity)\t\(.cve)\t\(.pkg)\t\(.installed) → \(.fixed)"
+            | "\(.key + 1). [\(.value.severity)] \(.value.cve)\n   📦 \(.value.pkg): \(.value.installed) → \(.value.fixed)"
           ' trivy-results.json)
           
+          # 총 CVE 개수 (중복 제거)
+          TOTAL_CVES=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | group_by(.VulnerabilityID) | length' trivy-results.json)
+          
           # 상세 목록이 비어있으면 메시지 설정
-          if [ -z "$VULN_DETAILS" ]; then
-            VULN_TABLE="취약점 없음 ✅"
+          if [ -z "$VULN_LIST" ]; then
+            VULN_LIST="Critical/High 취약점 없음 ✅"
+            FOOTER_TEXT=""
           else
-            VULN_TABLE="Severity | CVE | Package | Version\n-------|-----|---------|--------\n$(echo "$VULN_DETAILS" | sed 's/\t/ | /g')"
+            if [ "$TOTAL_CVES" -gt 10 ]; then
+              FOOTER_TEXT="\n\n_... 외 $((TOTAL_CVES - 10))건 더 있음. GitHub Actions에서 전체 확인_"
+            else
+              FOOTER_TEXT=""
+            fi
           fi
           
-          # 줄바꿈 이스케이프 처리
-          VULN_TABLE_ESCAPED=$(echo "$VULN_TABLE" | sed ':a;N;$!ba;s/\n/\\n/g')
+          # JSON 이스케이프 처리 (줄바꿈, 특수문자)
+          VULN_LIST_ESCAPED=$(echo "$VULN_LIST" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+          VULN_LIST_ESCAPED=${VULN_LIST_ESCAPED:1:-1}  # 앞뒤 따옴표 제거
+          
+          FOOTER_ESCAPED=$(echo "$FOOTER_TEXT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+          FOOTER_ESCAPED=${FOOTER_ESCAPED:1:-1}
           
           # Slack 메시지 생성
           cat << EOF > slack-payload.json
@@ -100,28 +114,23 @@ jobs:
                     "fields": [
                       {
                         "type": "mrkdwn",
-                        "text": "*스캔 일시:*\n${SCAN_DATE}"
+                        "text": "*📅 스캔 일시:*\n${SCAN_DATE}"
                       },
                       {
                         "type": "mrkdwn",
-                        "text": "*총 취약점:*\n${TOTAL}개"
-                      }
-                    ]
-                  },
-                  {
-                    "type": "section",
-                    "fields": [
-                      {
-                        "type": "mrkdwn",
-                        "text": "*🚨 Critical:*\n${CRITICAL}개"
+                        "text": "*📊 총 취약점:*\n${TOTAL}개"
                       },
                       {
                         "type": "mrkdwn",
-                        "text": "*⚠️ High:*\n${HIGH}개"
+                        "text": "*🚨 Critical:* ${CRITICAL}개"
                       },
                       {
                         "type": "mrkdwn",
-                        "text": "*📢 Medium:*\n${MEDIUM}개"
+                        "text": "*⚠️ High:* ${HIGH}개"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*📢 Medium:* ${MEDIUM}개"
                       },
                       {
                         "type": "mrkdwn",
@@ -136,22 +145,30 @@ jobs:
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": "*🔍 Critical/High 취약점 상세 (CVE 기준):*"
+                      "text": "*🔍 Critical/High 취약점 상세 (${TOTAL_CVES}개 CVE):*"
                     }
                   },
                   {
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": "\`\`\`${VULN_TABLE_ESCAPED}\`\`\`"
+                      "text": "${VULN_LIST_ESCAPED}${FOOTER_ESCAPED}"
                     }
                   },
                   {
-                    "type": "context",
+                    "type": "divider"
+                  },
+                  {
+                    "type": "actions",
                     "elements": [
                       {
-                        "type": "mrkdwn",
-                        "text": "🔗 <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|GitHub Actions 상세 보기>"
+                        "type": "button",
+                        "text": {
+                          "type": "plain_text",
+                          "text": "🔗 GitHub Actions 상세 보기",
+                          "emoji": true
+                        },
+                        "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
                       }
                     ]
                   }
