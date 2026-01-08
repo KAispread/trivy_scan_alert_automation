@@ -57,113 +57,109 @@ jobs:
           # Critical/High 총 개수
           TOTAL_HIGH_CRITICAL=$((CRITICAL + HIGH))
           
-          # 취약점 목록 생성 (그룹핑 없이 전체, Sev 높은 순, 최대 10개)
-          VULN_LIST=$(jq -r '
+          # 취약점 목록 생성 후 임시 파일에 저장
+          jq -r '
             [.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")]
             | sort_by(if .Severity == "CRITICAL" then 0 else 1 end)
             | .[0:10]
             | .[]
-            | "*[\(.Severity)]* \(.VulnerabilityID)\n• Library: \(.PkgName)\n• Status: \(.Status // "unknown")\n• Installed: \(.InstalledVersion)\n• Fixed: \(.FixedVersion // "no fix")"
-          ' trivy-results.json)
+            | "[\(.Severity)] \(.VulnerabilityID)\n  Library:   \(.PkgName)\n  Status:    \(.Status // "unknown")\n  Installed: \(.InstalledVersion)\n  Fixed:     \(.FixedVersion // "no fix")\n"
+          ' trivy-results.json > vuln_list.txt
           
-          # 상세 목록이 비어있으면 메시지 설정
-          if [ -z "$VULN_LIST" ]; then
-            VULN_LIST="Critical/High 취약점 없음 ✅"
-          else
-            # 10개 초과 시 footer 추가
-            if [ "$TOTAL_HIGH_CRITICAL" -gt 10 ]; then
-              VULN_LIST="${VULN_LIST}\n\n_... 외 $((TOTAL_HIGH_CRITICAL - 10))건 더 있음_"
-            fi
+          # 10개 초과 시 footer 추가
+          if [ "$TOTAL_HIGH_CRITICAL" -gt 10 ]; then
+            echo "" >> vuln_list.txt
+            echo "... 외 $((TOTAL_HIGH_CRITICAL - 10))건 더 있음" >> vuln_list.txt
           fi
           
-          # JSON 이스케이프 처리
-          VULN_LIST_ESCAPED=$(printf '%s' "$VULN_LIST" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
-          VULN_LIST_ESCAPED=${VULN_LIST_ESCAPED:1:-1}
+          # 파일이 비어있으면 기본 메시지
+          if [ ! -s vuln_list.txt ]; then
+            echo "Critical/High 취약점 없음 ✅" > vuln_list.txt
+          fi
           
-          # Slack 메시지 생성
-          cat << EOF > slack-payload.json
-          {
-            "attachments": [
-              {
-                "color": "${COLOR}",
-                "blocks": [
-                  {
-                    "type": "header",
-                    "text": {
-                      "type": "plain_text",
-                      "text": "${STATUS} Weekly Docker Image Security Scan",
-                      "emoji": true
-                    }
-                  },
-                  {
-                    "type": "section",
-                    "fields": [
-                      {
-                        "type": "mrkdwn",
-                        "text": "*📅 스캔 일시:*\n${SCAN_DATE}"
-                      },
-                      {
-                        "type": "mrkdwn",
-                        "text": "*📊 총 취약점:*\n${TOTAL}개"
+          # jq를 사용하여 안전하게 JSON 생성
+          jq -n \
+            --arg status "$STATUS" \
+            --arg color "$COLOR" \
+            --arg scan_date "$SCAN_DATE" \
+            --arg total "$TOTAL" \
+            --arg critical "$CRITICAL" \
+            --arg high "$HIGH" \
+            --arg medium "$MEDIUM" \
+            --arg total_hc "$TOTAL_HIGH_CRITICAL" \
+            --arg vuln_list "$(cat vuln_list.txt)" \
+            --arg actions_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            '{
+              "attachments": [
+                {
+                  "color": $color,
+                  "blocks": [
+                    {
+                      "type": "header",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "\($status) Weekly Docker Image Security Scan",
+                        "emoji": true
                       }
-                    ]
-                  },
-                  {
-                    "type": "section",
-                    "text": {
-                      "type": "mrkdwn",
-                      "text": "*🚨 Critical:* ${CRITICAL}개\n*⚠️ High:* ${HIGH}개\n*📢 Medium:* ${MEDIUM}개"
-                    }
-                  },
-                  {
-                    "type": "divider"
-                  },
-                  {
-                    "type": "section",
-                    "text": {
-                      "type": "mrkdwn",
-                      "text": "*🔍 Critical/High 취약점 상세 (${TOTAL_HIGH_CRITICAL}건):*"
-                    }
-                  },
-                  {
-                    "type": "rich_text",
-                    "elements": [
-                      {
-                        "type": "rich_text_preformatted",
-                        "elements": [
-                          {
-                            "type": "text",
-                            "text": "$(jq -r '
-                              [.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")]
-                              | sort_by(if .Severity == "CRITICAL" then 0 else 1 end)
-                              | .[0:10]
-                              | .[]
-                              | "[\(.Severity)] \(.VulnerabilityID)\n  Library:   \(.PkgName)\n  Status:    \(.Status // "unknown")\n  Installed: \(.InstalledVersion)\n  Fixed:     \(.FixedVersion // "no fix")\n"
-                            ' trivy-results.json)"
-                          }
-                        ]
-                      }
-                    ]
-                  },
-                  {
-                    "type": "context",
-                    "elements": [
-                      {
+                    },
+                    {
+                      "type": "section",
+                      "fields": [
+                        {
+                          "type": "mrkdwn",
+                          "text": "*📅 스캔 일시:*\n\($scan_date)"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*📊 총 취약점:*\n\($total)개"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "section",
+                      "text": {
                         "type": "mrkdwn",
-                        "text": "🔗 <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|trivy scan 리포트 보기>"
+                        "text": "*🚨 Critical:* \($critical)개\n*⚠️ High:* \($high)개\n*📢 Medium:* \($medium)개"
                       }
-                    ]
-                  }
-                ]
-              }
-            ]
-          }
-          EOF
+                    },
+                    {
+                      "type": "divider"
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "*🔍 Critical/High 취약점 상세 (\($total_hc)건):*"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "```\($vuln_list)```"
+                      }
+                    },
+                    {
+                      "type": "context",
+                      "elements": [
+                        {
+                          "type": "mrkdwn",
+                          "text": "🔗 <\($actions_url)|trivy scan 리포트 보기>"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }' > slack-payload.json
           
           # Slack 전송
           curl -X POST -H 'Content-type: application/json' \
             --data @slack-payload.json \
             $SLACK_WEBHOOK_URL
+          
+          # 임시 파일 정리
+          rm -f vuln_list.txt
 
       - name: Upload scan results
         uses: actions/upload-artifact@v4
