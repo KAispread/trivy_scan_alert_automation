@@ -2,7 +2,7 @@ name: Weekly Security Scan
 
 on:
   schedule:
-    - cron: '0 1 * * 1'
+    - cron: '0 0 * * 1'
   workflow_dispatch:
 
 env:
@@ -54,45 +54,52 @@ jobs:
             COLOR="#28a745"
           fi
           
-          # Critical/High 취약점 목록 (CVE 기준 중복 제거, 최대 10개, 보기 좋은 형식)
-          VULN_LIST=$(jq -r '
+          # 총 CVE 개수 (중복 제거)
+          TOTAL_CVES=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | group_by(.VulnerabilityID) | length' trivy-results.json)
+          
+          # 테이블 형식으로 취약점 목록 생성 (CVE 기준 중복 제거, 라이브러리 최대 3개 + ...)
+          VULN_TABLE=$(jq -r '
             [.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")]
             | group_by(.VulnerabilityID)
             | map({
                 cve: .[0].VulnerabilityID,
                 severity: .[0].Severity,
-                pkg: .[0].PkgName,
+                pkgs: [.[].PkgName] | unique,
+                pkg_display: (
+                  ([.[].PkgName] | unique) as $all |
+                  if ($all | length) <= 3 then
+                    $all | join(", ")
+                  else
+                    ($all[0:3] | join(", ")) + " ..."
+                  end
+                ),
+                pkg_count: ([.[].PkgName] | unique | length),
                 installed: .[0].InstalledVersion,
                 fixed: (.[0].FixedVersion // "no fix")
               })
-            | sort_by(.severity)
+            | sort_by(if .severity == "CRITICAL" then 0 else 1 end)
             | .[0:10]
-            | to_entries
             | .[]
-            | "\(.key + 1). [\(.value.severity)] \(.value.cve)\n   📦 \(.value.pkg): \(.value.installed) → \(.value.fixed)"
+            | "\(.severity | if . == "CRITICAL" then "CRIT" else "HIGH" end) | \(.cve) | \(.pkg_display) (\(.pkg_count)개) | \(.installed) → \(.fixed)"
           ' trivy-results.json)
           
-          # 총 CVE 개수 (중복 제거)
-          TOTAL_CVES=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | group_by(.VulnerabilityID) | length' trivy-results.json)
-          
-          # 상세 목록이 비어있으면 메시지 설정
-          if [ -z "$VULN_LIST" ]; then
-            VULN_LIST="Critical/High 취약점 없음 ✅"
-            FOOTER_TEXT=""
+          # 테이블 헤더 추가
+          if [ -z "$VULN_TABLE" ]; then
+            FULL_TABLE="Critical/High 취약점 없음 ✅"
           else
+            HEADER="Sev  | CVE            | Library (count)            | Version"
+            DIVIDER="-----+----------------+----------------------------+--------------------"
+            FULL_TABLE="${HEADER}\n${DIVIDER}\n${VULN_TABLE}"
+            
+            # 10개 초과 시 footer 추가
             if [ "$TOTAL_CVES" -gt 10 ]; then
-              FOOTER_TEXT="\n\n_... 외 $((TOTAL_CVES - 10))건 더 있음. GitHub Actions에서 전체 확인_"
-            else
-              FOOTER_TEXT=""
+              FULL_TABLE="${FULL_TABLE}\n${DIVIDER}\n... 외 $((TOTAL_CVES - 10))건 (GitHub Actions에서 전체 확인)"
             fi
           fi
           
-          # JSON 이스케이프 처리 (줄바꿈, 특수문자)
-          VULN_LIST_ESCAPED=$(echo "$VULN_LIST" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
-          VULN_LIST_ESCAPED=${VULN_LIST_ESCAPED:1:-1}  # 앞뒤 따옴표 제거
-          
-          FOOTER_ESCAPED=$(echo "$FOOTER_TEXT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
-          FOOTER_ESCAPED=${FOOTER_ESCAPED:1:-1}
+          # JSON 이스케이프 처리
+          FULL_TABLE_ESCAPED=$(printf '%s' "$FULL_TABLE" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+          FULL_TABLE_ESCAPED=${FULL_TABLE_ESCAPED:1:-1}
           
           # Slack 메시지 생성
           cat << EOF > slack-payload.json
@@ -152,7 +159,7 @@ jobs:
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": "${VULN_LIST_ESCAPED}${FOOTER_ESCAPED}"
+                      "text": "\`\`\`${FULL_TABLE_ESCAPED}\`\`\`"
                     }
                   },
                   {
@@ -165,7 +172,7 @@ jobs:
                         "type": "button",
                         "text": {
                           "type": "plain_text",
-                          "text": "🔗 GitHub Actions 상세 보기",
+                          "text": "📋 전체 리포트 보기",
                           "emoji": true
                         },
                         "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
