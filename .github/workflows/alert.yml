@@ -19,33 +19,31 @@ jobs:
       - name: Extract base image from Dockerfile
         id: base-image
         run: |
-          # Dockerfile 내용 확인 (디버깅)
           echo "=== Dockerfile 내용 ==="
           cat Dockerfile
           echo ""
           
-          # FROM 라인 추출 (여러 방법 시도)
           echo "=== FROM 라인 추출 ==="
           
-          # 방법 1: sed 사용
-          BASE_IMAGE=$(sed -n 's/^FROM[[:space:]]*\([^[:space:]]*\).*/\1/p' Dockerfile | head -1)
+          # FROM 라인 추출 (더 견고한 방식)
+          FROM_LINE=$(head -1 Dockerfile | tr -d '\r')
+          echo "FROM line: '$FROM_LINE'"
           
-          # 방법 1 실패 시 방법 2: grep + awk
-          if [ -z "$BASE_IMAGE" ]; then
-            BASE_IMAGE=$(grep -i "^FROM " Dockerfile | head -1 | awk '{print $2}')
-          fi
-          
-          # 방법 2 실패 시 방법 3: cut 사용
-          if [ -z "$BASE_IMAGE" ]; then
-            BASE_IMAGE=$(grep -i "^FROM " Dockerfile | head -1 | cut -d' ' -f2)
-          fi
+          # FROM 키워드 제거하고 이미지만 추출
+          BASE_IMAGE=$(echo "$FROM_LINE" | sed 's/^FROM[[:space:]]*//' | awk '{print $1}')
           
           echo "Extracted base image: '$BASE_IMAGE'"
           
           # 이미지 이름 검증
-          if [ -z "$BASE_IMAGE" ] || [ "$BASE_IMAGE" == "." ]; then
+          if [ -z "$BASE_IMAGE" ]; then
             echo "Error: Failed to extract base image from Dockerfile"
             exit 1
+          fi
+          
+          # 이미지가 실제로 pull 가능한지 확인 (선택사항)
+          echo "Validating image format..."
+          if [[ ! "$BASE_IMAGE" =~ ^[a-zA-Z0-9._/-]+:[a-zA-Z0-9._-]+$ ]] && [[ ! "$BASE_IMAGE" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "Warning: Image format might be invalid: '$BASE_IMAGE'"
           fi
           
           echo "image=$BASE_IMAGE" >> $GITHUB_OUTPUT
