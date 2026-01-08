@@ -19,14 +19,41 @@ jobs:
       - name: Extract base image from Dockerfile
         id: base-image
         run: |
-          BASE_IMAGE=$(grep -E '^FROM' Dockerfile | head -1 | awk '{print $2}')
+          # Dockerfile 내용 확인 (디버깅)
+          echo "=== Dockerfile 내용 ==="
+          cat Dockerfile
+          echo ""
+          
+          # FROM 라인 추출 (여러 방법 시도)
+          echo "=== FROM 라인 추출 ==="
+          
+          # 방법 1: sed 사용
+          BASE_IMAGE=$(sed -n 's/^FROM[[:space:]]*\([^[:space:]]*\).*/\1/p' Dockerfile | head -1)
+          
+          # 방법 1 실패 시 방법 2: grep + awk
+          if [ -z "$BASE_IMAGE" ]; then
+            BASE_IMAGE=$(grep -i "^FROM " Dockerfile | head -1 | awk '{print $2}')
+          fi
+          
+          # 방법 2 실패 시 방법 3: cut 사용
+          if [ -z "$BASE_IMAGE" ]; then
+            BASE_IMAGE=$(grep -i "^FROM " Dockerfile | head -1 | cut -d' ' -f2)
+          fi
+          
+          echo "Extracted base image: '$BASE_IMAGE'"
+          
+          # 이미지 이름 검증
+          if [ -z "$BASE_IMAGE" ] || [ "$BASE_IMAGE" == "." ]; then
+            echo "Error: Failed to extract base image from Dockerfile"
+            exit 1
+          fi
+          
           echo "image=$BASE_IMAGE" >> $GITHUB_OUTPUT
-          echo "Base image: $BASE_IMAGE"
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ steps.base-image.outputs.image }}
+          image-ref: '${{ steps.base-image.outputs.image }}'
           format: 'json'
           output: 'trivy-results.json'
           severity: 'CRITICAL,HIGH,MEDIUM'
