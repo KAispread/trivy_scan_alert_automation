@@ -1,0 +1,154 @@
+name: Weekly Security Scan
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+env:
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build scan image
+        run: |
+          docker build -f Dockerfile.scan -t scan-image:latest .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'scan-image:latest'
+          format: 'json'
+          output: 'trivy-results.json'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Parse results and send to Slack
+        run: |
+          # 취약점 카운트
+          CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json)
+          HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-results.json)
+          MEDIUM=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM")] | length' trivy-results.json)
+          TOTAL=$((CRITICAL + HIGH + MEDIUM))
+          
+          # 날짜
+          SCAN_DATE=$(date +'%Y-%m-%d %H:%M UTC')
+          
+          # 상태 이모지
+          if [ "$CRITICAL" -gt 0 ]; then
+            STATUS="🚨"
+            COLOR="#dc3545"
+          elif [ "$HIGH" -gt 0 ]; then
+            STATUS="⚠️"
+            COLOR="#ffc107"
+          elif [ "$MEDIUM" -gt 0 ]; then
+            STATUS="📢"
+            COLOR="#17a2b8"
+          else
+            STATUS="✅"
+            COLOR="#28a745"
+          fi
+          
+          # Critical/High 취약점 상세 목록 (최대 10개)
+          VULN_DETAILS=$(jq -r '
+            [.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] 
+            | .[0:10] 
+            | .[] 
+            | "• \(.Severity): \(.VulnerabilityID) - \(.PkgName) (\(.InstalledVersion) → \(.FixedVersion // "no fix"))"
+          ' trivy-results.json)
+          
+          # 상세 목록이 비어있으면 메시지 설정
+          if [ -z "$VULN_DETAILS" ]; then
+            VULN_DETAILS="Critical/High 취약점 없음"
+          fi
+          
+          # Slack 메시지 생성
+          cat << EOF > slack-payload.json
+          {
+            "attachments": [
+              {
+                "color": "${COLOR}",
+                "blocks": [
+                  {
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "${STATUS} Weekly Docker Image Security Scan",
+                      "emoji": true
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "*스캔 일시:*\n${SCAN_DATE}"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*총 취약점:*\n${TOTAL}개"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "*🚨 Critical:*\n${CRITICAL}개"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*⚠️ High:*\n${HIGH}개"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*📢 Medium:*\n${MEDIUM}개"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*📦 Image:*\neclipse-temurin:21-alpine"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "divider"
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "*Critical/High 취약점 상세:*\n\`\`\`${VULN_DETAILS}\`\`\`"
+                    }
+                  },
+                  {
+                    "type": "context",
+                    "elements": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "🔗 <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|GitHub Actions 상세 보기>"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+          
+          # Slack 전송
+          curl -X POST -H 'Content-type: application/json' \
+            --data @slack-payload.json \
+            $SLACK_WEBHOOK_URL
+
+      - name: Upload scan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-results.json
+          retention-days: 30
