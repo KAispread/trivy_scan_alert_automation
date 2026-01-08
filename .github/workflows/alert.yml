@@ -16,49 +16,45 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract base image from Dockerfile
-        id: base-image
+      - name: Extract base image and build scan image
+        id: build-image
         run: |
           echo "=== Dockerfile 내용 ==="
+          cat Dockerfile
+          echo ""
+          
+          # 스캔용 Dockerfile 생성 (FROM + apk 관련 RUN 명령만 추출)
+          echo "=== 스캔용 Dockerfile 생성 ==="
+          
+          # FROM 라인 추출
+          grep -i '^FROM ' Dockerfile > Dockerfile.scan
+          
+          # apk 관련 RUN 명령어 추출 (update, upgrade, add 등)
+          grep -E '^RUN.*apk ' Dockerfile >> Dockerfile.scan
+          
+          echo "=== Dockerfile.scan 내용 ==="
           cat Dockerfile.scan
           echo ""
           
-          echo "=== FROM 라인 추출 ==="
+          # 이미지 빌드
+          SCAN_IMAGE="security-scan-target:latest"
+          echo "Building scan image: $SCAN_IMAGE"
+          docker build -f Dockerfile.scan -t "$SCAN_IMAGE" .
           
-          # FROM 라인 추출 (더 견고한 방식)
-          FROM_LINE=$(head -1 Dockerfile.scan | tr -d '\r')
-          echo "FROM line: '$FROM_LINE'"
-          
-          # FROM 키워드 제거하고 이미지만 추출
-          BASE_IMAGE=$(echo "$FROM_LINE" | sed 's/^FROM[[:space:]]*//' | awk '{print $1}')
-          
-          echo "Extracted base image: '$BASE_IMAGE'"
-          
-          # 이미지 이름 검증
-          if [ -z "$BASE_IMAGE" ]; then
-            echo "Error: Failed to extract base image from Dockerfile"
-            exit 1
-          fi
-          
-          # 이미지가 실제로 pull 가능한지 확인 (선택사항)
-          echo "Validating image format..."
-          if [[ ! "$BASE_IMAGE" =~ ^[a-zA-Z0-9._/-]+:[a-zA-Z0-9._-]+$ ]] && [[ ! "$BASE_IMAGE" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
-            echo "Warning: Image format might be invalid: '$BASE_IMAGE'"
-          fi
-          
-          echo "image=$BASE_IMAGE" >> $GITHUB_OUTPUT
+          echo "image=$SCAN_IMAGE" >> $GITHUB_OUTPUT
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: '${{ steps.base-image.outputs.image }}'
+          image-ref: '${{ steps.build-image.outputs.image }}'
           format: 'json'
           output: 'trivy-results.json'
           severity: 'CRITICAL,HIGH,MEDIUM'
 
       - name: Parse results and send to Slack
         run: |
-          BASE_IMAGE="${{ steps.base-image.outputs.image }}"
+          # 원본 Dockerfile에서 베이스 이미지 추출 (표시용)
+          BASE_IMAGE=$(grep -m1 -i '^FROM ' Dockerfile | sed 's/^FROM[[:space:]]*//' | awk '{print $1}')
           
           # 취약점 카운트
           CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json)
@@ -154,7 +150,7 @@ jobs:
                     "elements": [
                       {
                         "type": "mrkdwn",
-                        "text": "📦 *Image:* \`${BASE_IMAGE}\`"
+                        "text": "📦 *Image:* \`${BASE_IMAGE}\` (with apk packages)"
                       }
                     ]
                   },
