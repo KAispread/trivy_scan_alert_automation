@@ -1,13 +1,6 @@
 FROM public.ecr.aws/docker/library/eclipse-temurin:21-alpine
 
+RUN apk update && apk upgrade --no-cache && rm -rf /var/cache/apk/*
 RUN apk --no-cache add curl aws-cli
-RUN mkdir logs
 
-ENV DD_JAVA_AGENT_PATH=/dd-java-agent.jar
-RUN curl -L https://dtdg.co/latest-java-tracer -o $DD_JAVA_AGENT_PATH
-
-ARG JAR_FILE=build/libs/*.jar
-COPY runApp.sh handleOOM.sh ./
-COPY ${JAR_FILE} app.jar
-
-ENTRYPOINT ["sh", "runApp.sh"]
+CMD ["sh", "-c", "echo 'Scan image'"]
