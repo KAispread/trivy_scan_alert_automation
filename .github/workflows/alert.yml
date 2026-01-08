@@ -2,7 +2,7 @@ name: Weekly Security Scan
 
 on:
   schedule:
-    - cron: '0 0 * * 1'
+    - cron: '0 1 * * 1'
   workflow_dispatch:
 
 env:
@@ -54,52 +54,31 @@ jobs:
             COLOR="#28a745"
           fi
           
-          # 총 CVE 개수 (중복 제거)
-          TOTAL_CVES=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | group_by(.VulnerabilityID) | length' trivy-results.json)
+          # Critical/High 총 개수
+          TOTAL_HIGH_CRITICAL=$((CRITICAL + HIGH))
           
-          # 테이블 형식으로 취약점 목록 생성 (CVE 기준 중복 제거, 라이브러리 최대 3개 + ...)
-          VULN_TABLE=$(jq -r '
+          # 취약점 목록 생성 (그룹핑 없이 전체, Sev 높은 순, 최대 10개)
+          VULN_LIST=$(jq -r '
             [.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")]
-            | group_by(.VulnerabilityID)
-            | map({
-                cve: .[0].VulnerabilityID,
-                severity: .[0].Severity,
-                pkgs: [.[].PkgName] | unique,
-                pkg_display: (
-                  ([.[].PkgName] | unique) as $all |
-                  if ($all | length) <= 3 then
-                    $all | join(", ")
-                  else
-                    ($all[0:3] | join(", ")) + " ..."
-                  end
-                ),
-                pkg_count: ([.[].PkgName] | unique | length),
-                installed: .[0].InstalledVersion,
-                fixed: (.[0].FixedVersion // "no fix")
-              })
-            | sort_by(if .severity == "CRITICAL" then 0 else 1 end)
+            | sort_by(if .Severity == "CRITICAL" then 0 else 1 end)
             | .[0:10]
             | .[]
-            | "\(.severity | if . == "CRITICAL" then "CRIT" else "HIGH" end) | \(.cve) | \(.pkg_display) (\(.pkg_count)개) | \(.installed) → \(.fixed)"
+            | "▪️ *Sev:* \(.Severity)\n   *CVE:* \(.VulnerabilityID)\n   *Library:* \(.PkgName)\n   *Status:* \(.Status // "unknown")\n   *Installed:* \(.InstalledVersion)\n   *Fixed:* \(.FixedVersion // "no fix")"
           ' trivy-results.json)
           
-          # 테이블 헤더 추가
-          if [ -z "$VULN_TABLE" ]; then
-            FULL_TABLE="Critical/High 취약점 없음 ✅"
+          # 상세 목록이 비어있으면 메시지 설정
+          if [ -z "$VULN_LIST" ]; then
+            VULN_LIST="Critical/High 취약점 없음 ✅"
           else
-            HEADER="Sev  | CVE            | Library (count)            | Version"
-            DIVIDER="-----+----------------+----------------------------+--------------------"
-            FULL_TABLE="${HEADER}\n${DIVIDER}\n${VULN_TABLE}"
-            
             # 10개 초과 시 footer 추가
-            if [ "$TOTAL_CVES" -gt 10 ]; then
-              FULL_TABLE="${FULL_TABLE}\n${DIVIDER}\n... 외 $((TOTAL_CVES - 10))건 (GitHub Actions에서 전체 확인)"
+            if [ "$TOTAL_HIGH_CRITICAL" -gt 10 ]; then
+              VULN_LIST="${VULN_LIST}\n\n_... 외 $((TOTAL_HIGH_CRITICAL - 10))건 더 있음_"
             fi
           fi
           
           # JSON 이스케이프 처리
-          FULL_TABLE_ESCAPED=$(printf '%s' "$FULL_TABLE" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
-          FULL_TABLE_ESCAPED=${FULL_TABLE_ESCAPED:1:-1}
+          VULN_LIST_ESCAPED=$(printf '%s' "$VULN_LIST" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+          VULN_LIST_ESCAPED=${VULN_LIST_ESCAPED:1:-1}
           
           # Slack 메시지 생성
           cat << EOF > slack-payload.json
@@ -146,38 +125,28 @@ jobs:
                     ]
                   },
                   {
-                    "type": "divider"
-                  },
-                  {
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": "*🔍 Critical/High 취약점 상세 (${TOTAL_CVES}개 CVE):*"
-                    }
-                  },
-                  {
-                    "type": "section",
-                    "text": {
-                      "type": "mrkdwn",
-                      "text": "\`\`\`${FULL_TABLE_ESCAPED}\`\`\`"
+                      "text": "🔗 *<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|GitHub Actions 전체 리포트 보기>*"
                     }
                   },
                   {
                     "type": "divider"
                   },
                   {
-                    "type": "actions",
-                    "elements": [
-                      {
-                        "type": "button",
-                        "text": {
-                          "type": "plain_text",
-                          "text": "📋 전체 리포트 보기",
-                          "emoji": true
-                        },
-                        "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-                      }
-                    ]
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "*🔍 Critical/High 취약점 상세 (${TOTAL_HIGH_CRITICAL}건):*"
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "${VULN_LIST_ESCAPED}"
+                    }
                   }
                 ]
               }
