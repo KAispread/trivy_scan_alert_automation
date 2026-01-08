@@ -1,0 +1,1 @@
+# trivy_scan_alert_automation
