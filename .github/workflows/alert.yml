@@ -20,7 +20,7 @@ jobs:
         id: base-image
         run: |
           echo "=== Dockerfile 내용 ==="
-          cat Dockerfile
+          cat Dockerfile.scan
           echo ""
           
           echo "=== FROM 라인 추출 ==="
